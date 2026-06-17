@@ -12,7 +12,9 @@ import {
   Space,
   Alert,
   message,
-  Divider
+  Divider,
+  Tabs,
+  Empty
 } from 'antd';
 import {
   ShopOutlined,
@@ -20,86 +22,76 @@ import {
   LockOutlined,
   ExclamationCircleOutlined,
   FileTextOutlined,
-  LockFilled
+  LockFilled,
+  ClockCircleOutlined,
+  PlusOutlined
 } from '@ant-design/icons';
-import { CLASSES, UNIFORM_TYPES, SIZES } from '../data/mockData';
+import { CLASSES, UNIFORM_TYPES, SIZES, SEASONS } from '../data/mockData';
 import {
-  getProductionSummary,
+  getProductionSummaryByStatus,
   getStudents,
-  getOrderStatus,
-  isClassLocked,
-  isClassConfirmed,
-  lockClassOrder,
+  getClassSeasonStatus,
+  isClassSeasonLocked,
+  isClassSeasonConfirmed,
+  lockClassSeasonOrder,
   getClassName,
   getSizeName,
-  getTypeName,
-  calculateAmount,
-  getClassSummary
+  getSeasonName,
+  getSeasonPrice,
+  getClassSeasonSummary,
+  getSeasonClassBatches,
+  getSizeSummaryBySeasonAndStatus
 } from '../utils/storage';
 
 const { Option } = Select;
+const { TabPane } = Tabs;
 
 export default function SupplierPage() {
-  const [productionSummary, setProductionSummary] = useState([]);
+  const [productionData, setProductionData] = useState({ confirmed: [], pending_lock: [], supplementary: [] });
   const [allStudents, setAllStudents] = useState([]);
-  const [orderStatus, setOrderStatus] = useState({});
-  const [selectedClass, setSelectedClass] = useState(null);
+  const [batches, setBatches] = useState([]);
+  const [selectedTab, setSelectedTab] = useState('pending_lock');
+  const [selectedSeason, setSelectedSeason] = useState('all');
   const [detailModalVisible, setDetailModalVisible] = useState(false);
-  const [classStudents, setClassStudents] = useState([]);
-  const [classSummary, setClassSummary] = useState({ total: 0, submitted: 0, pending: 0, totalAmount: 0 });
+  const [detailBatch, setDetailBatch] = useState(null);
+  const [detailStudents, setDetailStudents] = useState([]);
 
   const loadData = () => {
-    setProductionSummary(getProductionSummary());
+    setProductionData(getProductionSummaryByStatus());
     setAllStudents(getStudents());
-    setOrderStatus(getOrderStatus());
+    setBatches(getSeasonClassBatches());
   };
 
   useEffect(() => {
     loadData();
   }, []);
 
-  const getClassOrderStatus = () => {
-    return CLASSES.map(cls => {
-      const status = orderStatus[cls.id] || {};
-      const summary = getClassSummary(cls.id);
-      return {
-        ...cls,
-        ...status,
-        ...summary
-      };
-    });
-  };
-
-  const handleViewClassDetail = (classId) => {
-    setSelectedClass(classId);
-    const students = getStudents().filter(s => s.classId === classId && s.status === 'submitted');
-    setClassStudents(students);
-    setClassSummary(getClassSummary(classId));
-    setDetailModalVisible(true);
-  };
-
-  const handleLockOrder = (classId) => {
+  const handleLockOrder = (classId, season, batchType = 'normal') => {
     const classInfo = CLASSES.find(c => c.id === classId);
-    if (!isClassConfirmed(classId)) {
-      message.error('该班级订单尚未经过家委会确认，无法锁定');
+    if (batchType === 'supplementary') {
+      message.info('补录批次不需要锁定，将自动进入生产队列');
       return;
     }
-    if (isClassLocked(classId)) {
-      message.warning('该班级订单已锁定');
+    if (!isClassSeasonConfirmed(classId, season)) {
+      message.error('该班级该季节订单尚未经过家委会确认，无法锁定');
+      return;
+    }
+    if (isClassSeasonLocked(classId, season)) {
+      message.warning('该班级该季节订单已锁定');
       return;
     }
 
     Modal.confirm({
-      title: '锁定订单',
+      title: `锁定${getSeasonName(season)}订单`,
       icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
       content: (
         <div>
-          <p>您即将锁定 <strong>{classInfo?.name}</strong> 的校服订单。</p>
+          <p>您即将锁定 <strong>{classInfo?.name}</strong> 的 <strong>{getSeasonName(season)}</strong> 校服订单。</p>
           <p style={{ marginBottom: 0 }}>锁定后：</p>
           <ul style={{ marginLeft: 20, marginTop: 8 }}>
             <li>订单将进入生产流程，不可撤销</li>
             <li>已提交的学生尺码信息不可修改</li>
-            <li>仅可补录未提交的学生信息</li>
+            <li>如后续发现缺码，仅允许新增补单，不允许修改原尺码</li>
           </ul>
         </div>
       ),
@@ -107,19 +99,21 @@ export default function SupplierPage() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () => {
-        lockClassOrder(classId);
-        message.success('订单已锁定，可以开始生产');
+        lockClassSeasonOrder(classId, season);
+        message.success(`${getSeasonName(season)}订单已锁定，可以开始生产`);
         loadData();
       }
     });
   };
 
-  const handleLockAll = () => {
-    const unLockedClasses = CLASSES.filter(
-      cls => isClassConfirmed(cls.id) && !isClassLocked(cls.id)
+  const handleLockAllConfirmed = () => {
+    const toLock = batches.filter(
+      b => b.status === 'pending_lock'
+        && b.batchType === 'normal'
+        && (selectedSeason === 'all' || b.season === selectedSeason)
     );
 
-    if (unLockedClasses.length === 0) {
+    if (toLock.length === 0) {
       message.warning('没有可锁定的订单');
       return;
     }
@@ -129,10 +123,10 @@ export default function SupplierPage() {
       icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
       content: (
         <div>
-          <p>您即将锁定以下 {unLockedClasses.length} 个班级的订单：</p>
+          <p>您即将锁定以下 {toLock.length} 个正常批次（补录批次自动处理）：</p>
           <ul style={{ marginLeft: 20, marginTop: 8 }}>
-            {unLockedClasses.map(cls => (
-              <li key={cls.id}>{cls.name}</li>
+            {toLock.map(b => (
+              <li key={b.id}>{b.className} - {b.seasonName}</li>
             ))}
           </ul>
         </div>
@@ -141,71 +135,125 @@ export default function SupplierPage() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () => {
-        unLockedClasses.forEach(cls => lockClassOrder(cls.id));
-        message.success(`已锁定 ${unLockedClasses.length} 个班级订单`);
+        const done = new Set();
+        toLock.forEach(b => {
+          const key = `${b.classId}-${b.season}`;
+          if (!done.has(key)) {
+            lockClassSeasonOrder(b.classId, b.season);
+            done.add(key);
+          }
+        });
+        message.success(`已锁定 ${done.size} 个班级的季节订单`);
         loadData();
       }
     });
   };
 
-  const getPivotData = () => {
+  const handleViewBatchDetail = (batch) => {
+    setDetailBatch(batch);
+    const batchStudents = allStudents.filter(s => {
+      const order = s.orders && s.orders[batch.season];
+      if (!order || !order.size) return false;
+
+      if (batch.batchType === 'normal') {
+        return s.classId === batch.classId && !order.isSupplementary && order.status !== 'pending_review';
+      } else if (batch.batchType === 'supplementary') {
+        return s.classId === batch.classId && order.isSupplementary === true;
+      }
+      return false;
+    });
+    setDetailStudents(batchStudents);
+    setDetailModalVisible(true);
+  };
+
+  const getBatchData = () => {
+    let filtered = batches;
+    if (selectedSeason !== 'all') {
+      filtered = filtered.filter(b => b.season === selectedSeason);
+    }
+
+    if (selectedTab === 'confirmed') {
+      return filtered.filter(b => b.status === 'confirmed' && b.batchType === 'normal');
+    } else if (selectedTab === 'pending_lock') {
+      return filtered.filter(b => b.status === 'pending_lock' && b.batchType === 'normal');
+    } else if (selectedTab === 'supplementary') {
+      return filtered.filter(b => b.batchType === 'supplementary');
+    }
+    return [];
+  };
+
+  const getPivotData = (statusList) => {
     const pivot = {};
-    const types = UNIFORM_TYPES.map(t => t.id);
     const sizes = SIZES.map(s => s.id);
 
-    types.forEach(type => {
-      pivot[type] = {};
+    SEASONS.forEach(season => {
+      pivot[season.id] = {};
       sizes.forEach(size => {
-        pivot[type][size] = 0;
+        pivot[season.id][size] = 0;
       });
-      pivot[type].total = 0;
+      pivot[season.id].total = 0;
     });
 
-    productionSummary.forEach(item => {
-      if (pivot[item.type] && pivot[item.type][item.size] !== undefined) {
-        pivot[item.type][item.size] += item.count;
-        pivot[item.type].total += item.count;
-      }
+    const filterStudents = allStudents.filter(s => {
+      let included = false;
+      SEASONS.forEach(season => {
+        const order = s.orders && s.orders[season.id];
+        if (order && order.size && statusList.includes(order.status)) {
+          if (selectedSeason === 'all' || selectedSeason === season.id) {
+            included = true;
+            pivot[season.id][order.size] += 1;
+            pivot[season.id].total += 1;
+          }
+        }
+      });
+      return included;
     });
 
     const sizeTotals = {};
     sizes.forEach(size => {
-      sizeTotals[size] = types.reduce((sum, type) => sum + pivot[type][size], 0);
+      sizeTotals[size] = SEASONS.reduce((sum, season) => {
+        if (selectedSeason === 'all' || selectedSeason === season.id) {
+          return sum + pivot[season.id][size];
+        }
+        return sum;
+      }, 0);
     });
 
-    return { pivot, sizeTotals };
+    return { pivot, sizeTotals, totalCount: filterStudents.length };
   };
 
-  const { pivot, sizeTotals } = getPivotData();
-
-  const classOrderColumns = [
+  const batchColumns = [
+    {
+      title: '批次类型',
+      key: 'batchType',
+      width: 110,
+      align: 'center',
+      render: (_, record) => (
+        record.batchType === 'supplementary'
+          ? <Tag color="purple" icon={<PlusOutlined />}>补录批次</Tag>
+          : <Tag color="blue">正常批次</Tag>
+      )
+    },
     {
       title: '班级',
-      dataIndex: 'name',
-      key: 'name',
-      width: 150
+      dataIndex: 'className',
+      key: 'className',
+      width: 140
     },
     {
-      title: '学生总数',
-      dataIndex: 'total',
-      key: 'total',
+      title: '季节',
+      key: 'season',
       width: 100,
-      align: 'center'
+      render: (_, record) => (
+        <span>{record.seasonIcon} {record.seasonName}</span>
+      )
     },
     {
-      title: '已提交',
+      title: '提交人数',
       dataIndex: 'submitted',
       key: 'submitted',
       width: 100,
-      align: 'center',
-      render: (value, record) => (
-        <span>
-          {value}
-          {record.pending > 0 && (
-            <Tag color="orange" style={{ marginLeft: 4 }}>{record.pending}人未交</Tag>
-          )}
-        </span>
-      )
+      align: 'center'
     },
     {
       title: '总金额',
@@ -216,39 +264,52 @@ export default function SupplierPage() {
     },
     {
       title: '确认状态',
-      dataIndex: 'confirmed',
       key: 'confirmed',
       width: 120,
       align: 'center',
-      render: (confirmed, record) => (
-        confirmed
+      render: (_, record) => {
+        if (record.batchType === 'supplementary') {
+          return <Tag icon={<CheckCircleOutlined />} color="default">自动生效</Tag>;
+        }
+        return record.confirmed
           ? <Tag icon={<CheckCircleOutlined />} color="success">已确认</Tag>
-          : <Tag icon={<ExclamationCircleOutlined />} color="warning">待确认</Tag>
-      )
+          : <Tag icon={<ExclamationCircleOutlined />} color="warning">待确认</Tag>;
+      }
     },
     {
       title: '确认时间',
       dataIndex: 'confirmedAt',
       key: 'confirmedAt',
-      width: 180
+      width: 180,
+      render: (v, r) => r.batchType === 'supplementary' ? '-' : (v || '-')
     },
     {
       title: '锁定状态',
-      dataIndex: 'locked',
       key: 'locked',
       width: 120,
       align: 'center',
-      render: (locked) => (
-        locked
+      render: (_, record) => {
+        if (record.batchType === 'supplementary') {
+          return <Tag icon={<ShopOutlined />} color="purple">待生产</Tag>;
+        }
+        return record.locked
           ? <Tag icon={<LockOutlined />} color="error">已锁定</Tag>
-          : <Tag color="default">未锁定</Tag>
-      )
+          : <Tag icon={<ClockCircleOutlined />} color="default">待锁单</Tag>;
+      }
     },
     {
       title: '锁定时间',
       dataIndex: 'lockedAt',
       key: 'lockedAt',
-      width: 180
+      width: 180,
+      render: (v, r) => r.batchType === 'supplementary' ? '-' : (v || '-')
+    },
+    {
+      title: '截止时间',
+      dataIndex: 'deadline',
+      key: 'deadline',
+      width: 130,
+      render: (v) => v || '-'
     },
     {
       title: '操作',
@@ -260,71 +321,25 @@ export default function SupplierPage() {
           <Button
             type="link"
             icon={<FileTextOutlined />}
-            onClick={() => handleViewClassDetail(record.id)}
+            onClick={() => handleViewBatchDetail(record)}
           >
             详情
           </Button>
-          <Button
-            type="link"
-            icon={<LockFilled />}
-            onClick={() => handleLockOrder(record.id)}
-            disabled={!record.confirmed || record.locked}
-            danger
-          >
-            锁定
-          </Button>
+          {record.batchType === 'normal' && (
+            <Button
+              type="link"
+              icon={<LockFilled />}
+              onClick={() => handleLockOrder(record.classId, record.season, record.batchType)}
+              disabled={!record.confirmed || record.locked}
+              danger
+            >
+              锁定
+            </Button>
+          )}
         </Space>
       )
     }
   ];
-
-  const pivotColumns = [
-    {
-      title: '校服类型',
-      dataIndex: 'typeName',
-      key: 'typeName',
-      width: 120,
-      fixed: 'left'
-    },
-    ...SIZES.map(size => ({
-      title: size.name,
-      dataIndex: size.id,
-      key: size.id,
-      width: 100,
-      align: 'center',
-      render: (value) => value > 0 ? <strong>{value}</strong> : '-'
-    })),
-    {
-      title: '合计',
-      dataIndex: 'total',
-      key: 'total',
-      width: 100,
-      align: 'center',
-      fixed: 'right',
-      render: (value) => <strong style={{ color: '#1677ff' }}>{value}</strong>
-    }
-  ];
-
-  const pivotData = UNIFORM_TYPES.map(type => ({
-    key: type.id,
-    typeName: type.name,
-    ...pivot[type.id]
-  }));
-
-  const totalRow = {
-    key: 'total',
-    typeName: <strong>尺码合计</strong>,
-    ...Object.fromEntries(SIZES.map(s => [s.id, sizeTotals[s.id]])),
-    total: Object.values(sizeTotals).reduce((a, b) => a + b, 0)
-  };
-
-  const totalAmount = allStudents
-    .filter(s => s.status === 'submitted')
-    .reduce((sum, s) => sum + calculateAmount(s.types), 0);
-
-  const totalStudents = allStudents.filter(s => s.status === 'submitted').length;
-  const lockedClasses = CLASSES.filter(c => isClassLocked(c.id)).length;
-  const confirmedClasses = CLASSES.filter(c => isClassConfirmed(c.id)).length;
 
   const detailColumns = [
     {
@@ -341,32 +356,121 @@ export default function SupplierPage() {
     },
     {
       title: '尺码',
-      dataIndex: 'size',
       key: 'size',
-      width: 100,
-      render: (size) => getSizeName(size)
+      width: 120,
+      render: (_, record) => {
+        const order = record.orders && record.orders[detailBatch?.season];
+        return order && order.size ? getSizeName(order.size) : '-';
+      }
     },
     {
-      title: '校服类型',
-      dataIndex: 'types',
-      key: 'types',
-      render: (types) => types.map(t => (
-        <Tag key={t} color="blue">{getTypeName(t)}</Tag>
-      ))
+      title: '订单类型',
+      key: 'type',
+      width: 120,
+      render: (_, record) => {
+        const order = record.orders && record.orders[detailBatch?.season];
+        return order && order.isSupplementary
+          ? <Tag color="purple" icon={<PlusOutlined />}>补录订单</Tag>
+          : <Tag color="blue">正常订单</Tag>;
+      }
     },
     {
       title: '金额',
       key: 'amount',
       width: 100,
-      render: (_, record) => `¥${calculateAmount(record.types)}`
+      render: (_, record) => {
+        const order = record.orders && record.orders[detailBatch?.season];
+        return order && order.size ? `¥${detailBatch ? getSeasonPrice(detailBatch.season) : 0}` : '-';
+      }
     },
     {
       title: '提交时间',
-      dataIndex: 'submittedAt',
       key: 'submittedAt',
-      width: 180
+      width: 180,
+      render: (_, record) => {
+        const order = record.orders && record.orders[detailBatch?.season];
+        return order && (order.submittedAt || order.updatedAt) || '-';
+      }
     }
   ];
+
+  const confirmedCount = batches.filter(
+    b => b.status === 'confirmed' && b.batchType === 'normal' && (selectedSeason === 'all' || b.season === selectedSeason)
+  ).length;
+  const pendingCount = batches.filter(
+    b => b.status === 'pending_lock' && b.batchType === 'normal' && (selectedSeason === 'all' || b.season === selectedSeason)
+  ).length;
+  const supplementaryCount = batches.filter(
+    b => b.batchType === 'supplementary' && (selectedSeason === 'all' || b.season === selectedSeason)
+  ).length;
+  const lockedClasses = batches.filter(
+    b => b.batchType === 'normal' && b.locked && (selectedSeason === 'all' || b.season === selectedSeason)
+  );
+  const confirmedClasses = batches.filter(
+    b => b.batchType === 'normal' && b.confirmed && (selectedSeason === 'all' || b.season === selectedSeason)
+  );
+  const totalStudentsByTab = () => {
+    const data = getBatchData();
+    return data.reduce((sum, b) => sum + (b.submitted || 0), 0);
+  };
+  const totalAmountByTab = () => {
+    const data = getBatchData();
+    return data.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+  };
+
+  const renderSummaryCards = (statusList, batchType = 'normal') => {
+    const { pivot } = getPivotData(statusList);
+    const visibleSeasons = selectedSeason === 'all' ? SEASONS : SEASONS.filter(s => s.id === selectedSeason);
+
+    return (
+      <Row gutter={16}>
+        {visibleSeasons.map(season => {
+          const seasonBatches = batches.filter(
+            b => b.season === season.id && b.batchType === batchType
+          );
+          const submitted = seasonBatches.reduce((s, b) => s + (b.submitted || 0), 0);
+          return (
+            <Col span={Math.floor(24 / visibleSeasons.length)} key={season.id}>
+              <Card
+                title={
+                  <span>
+                    {season.icon} {season.name} 尺码汇总
+                    {batchType === 'supplementary' && <Tag color="purple" style={{ marginLeft: 8 }}>补录</Tag>}
+                  </span>
+                }
+                size="small"
+                extra={<Tag color="blue">共{pivot[season.id].total || submitted}套</Tag>}
+                style={{ marginBottom: 16 }}
+              >
+                <Row gutter={8}>
+                  {SIZES.map(size => (
+                    <Col span={Math.floor(24 / SIZES.length)} key={size.id}>
+                      <div style={{
+                        background: pivot[season.id][size.id] > 0
+                          ? (batchType === 'supplementary'
+                              ? 'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)'
+                              : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)')
+                          : '#f5f5f5',
+                        color: pivot[season.id][size.id] > 0 ? 'white' : '#999',
+                        padding: '12px 4px',
+                        textAlign: 'center',
+                        borderRadius: 8,
+                        marginBottom: 8
+                      }}>
+                        <div style={{ fontSize: 20, fontWeight: 700 }}>{pivot[season.id][size.id]}</div>
+                        <div style={{ fontSize: 12 }}>{size.name}</div>
+                        <div style={{ fontSize: 10, opacity: 0.8 }}>{size.height}</div>
+                      </div>
+                    </Col>
+                  ))}
+                </Row>
+              </Card>
+            </Col>
+          );
+        })}
+      </Row>
+    );
+  };
 
   return (
     <div>
@@ -375,137 +479,202 @@ export default function SupplierPage() {
       </h2>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <div className="stat-card">
-            <div className="stat-value">{CLASSES.length}</div>
-            <div className="stat-label">班级总数</div>
-          </div>
-        </Col>
-        <Col span={6}>
+        <Col span={4}>
           <div className="stat-card" style={{ background: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' }}>
-            <div className="stat-value">{confirmedClasses}/{CLASSES.length}</div>
-            <div className="stat-label">已确认班级</div>
+            <div className="stat-value">{confirmedClasses.length}</div>
+            <div className="stat-label">已确认批次</div>
           </div>
         </Col>
-        <Col span={6}>
+        <Col span={4}>
           <div className="stat-card" style={{ background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' }}>
-            <div className="stat-value">{lockedClasses}/{CLASSES.length}</div>
-            <div className="stat-label">已锁定班级</div>
+            <div className="stat-value">{lockedClasses.length}</div>
+            <div className="stat-label">已锁定批次</div>
           </div>
         </Col>
-        <Col span={6}>
+        <Col span={4}>
+          <div className="stat-card" style={{ background: 'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)' }}>
+            <div className="stat-value">{productionData.supplementary.length}</div>
+            <div className="stat-label">补录订单数</div>
+          </div>
+        </Col>
+        <Col span={4}>
           <div className="stat-card" style={{ background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' }}>
-            <div className="stat-value">{totalStudents}人 / ¥{totalAmount}</div>
-            <div className="stat-label">总订量 / 总金额</div>
+            <div className="stat-value">{totalStudentsByTab()}人</div>
+            <div className="stat-label">当前批次人数</div>
+          </div>
+        </Col>
+        <Col span={4}>
+          <div className="stat-card" style={{ background: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)' }}>
+            <div className="stat-value">¥{totalAmountByTab()}</div>
+            <div className="stat-label">当前批次金额</div>
+          </div>
+        </Col>
+        <Col span={4}>
+          <div className="stat-card">
+            <div className="stat-value">{allStudents.length}</div>
+            <div className="stat-label">学生总数</div>
           </div>
         </Col>
       </Row>
 
       <Alert
         message="生产说明"
-        description="订单经家委会确认后，供应商可进行锁定操作。锁定后的订单进入生产流程，已提交学生的尺码信息不可修改，仅可补录遗漏的学生信息。"
+        description={
+          <div>
+            <p><strong>已确认批次</strong>：家委会已确认且供应商已锁定，可直接安排生产，不可修改。</p>
+            <p style={{ marginBottom: 0 }}><strong>待锁单批次</strong>：家委会已确认但供应商尚未锁定，锁定后进入生产。</p>
+            <p style={{ marginBottom: 0 }}><strong>补录批次</strong>：锁单后发现缺码而新增的补单，单独统计，不影响原订单。</p>
+          </div>
+        }
         type="info"
         showIcon
         className="info-alert"
       />
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 className="section-title" style={{ marginTop: 0, marginBottom: 0 }}>
-          班级订单状态
-        </h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontWeight: 500 }}>季节筛选：</span>
+          <Select
+            value={selectedSeason}
+            onChange={setSelectedSeason}
+            style={{ width: 160 }}
+          >
+            <Option value="all">全部季节</Option>
+            {SEASONS.map(s => (
+              <Option key={s.id} value={s.id}>{s.icon} {s.name}</Option>
+            ))}
+          </Select>
+        </div>
         <Button
           type="primary"
           icon={<LockOutlined />}
-          onClick={handleLockAll}
-          disabled={CLASSES.filter(c => isClassConfirmed(c.id) && !isClassLocked(c.id)).length === 0}
+          onClick={handleLockAllConfirmed}
+          disabled={pendingCount === 0}
           danger
         >
-          批量锁定已确认订单
+          批量锁定待锁单批次（{pendingCount}）
         </Button>
       </div>
 
-      <div className="table-container" style={{ marginBottom: 24 }}>
-        <Table
-          columns={classOrderColumns}
-          dataSource={getClassOrderStatus()}
-          rowKey="id"
-          pagination={false}
-          bordered
-          size="middle"
-        />
+      <div style={{ marginBottom: 16 }}>
+        <Tabs activeKey={selectedTab} onChange={setSelectedTab}>
+          <TabPane
+            tab={
+              <span>
+                <CheckCircleOutlined /> 已确认（{confirmedCount}）
+              </span>
+            }
+            key="confirmed"
+          />
+          <TabPane
+            tab={
+              <span>
+                <ClockCircleOutlined /> 待锁单（{pendingCount}）
+              </span>
+            }
+            key="pending_lock"
+          />
+          <TabPane
+            tab={
+              <span>
+                <PlusOutlined /> 已补录（{supplementaryCount}）
+              </span>
+            }
+            key="supplementary"
+          />
+        </Tabs>
       </div>
 
-      <Divider orientation="left">生产数量汇总</Divider>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <h3 className="section-title" style={{ marginTop: 0, marginBottom: 0 }}>
+          {selectedTab === 'confirmed' && '已确认并锁定 - 生产中批次'}
+          {selectedTab === 'pending_lock' && '待锁单批次 - 确认后待锁定'}
+          {selectedTab === 'supplementary' && '已补录批次 - 锁单后新增'}
+        </h3>
+      </div>
 
-      <Card
-        title="尺码 × 类型 交叉汇总表"
-        extra={<Tag color="blue">单位：套</Tag>}
-        style={{ marginBottom: 16 }}
-      >
-        <div className="table-container">
+      <div className="table-container" style={{ marginBottom: 16 }}>
+        {getBatchData().length > 0 ? (
           <Table
-            columns={pivotColumns}
-            dataSource={[...pivotData, totalRow]}
+            columns={batchColumns}
+            dataSource={getBatchData()}
+            rowKey="id"
             pagination={false}
             bordered
             size="middle"
           />
-        </div>
-      </Card>
+        ) : (
+          <Empty
+            description={
+              selectedTab === 'confirmed' ? '暂无已锁定的生产批次'
+                : selectedTab === 'pending_lock' ? '暂无待锁单批次'
+                : '暂无补录订单'
+            }
+            style={{ padding: '40px 0' }}
+          />
+        )}
+      </div>
+
+      {selectedTab === 'confirmed' && renderSummaryCards(['submitted'], 'normal')}
+      {selectedTab === 'pending_lock' && renderSummaryCards(['submitted'], 'normal')}
+      {selectedTab === 'supplementary' && renderSummaryCards(['submitted', 'supplementary'], 'supplementary')}
+
+      <Divider orientation="left">各季节整体汇总</Divider>
 
       <Row gutter={16}>
-        <Col span={12}>
-          <Card title="按尺码汇总" size="small">
-            <Row gutter={8}>
-              {SIZES.map(size => (
-                <Col span={8} key={size.id}>
-                  <div style={{
-                    background: sizeTotals[size.id] > 0
-                      ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-                      : '#f5f5f5',
-                    color: sizeTotals[size.id] > 0 ? 'white' : '#999',
-                    padding: '16px 8px',
-                    textAlign: 'center',
-                    borderRadius: 8,
-                    marginBottom: 8
-                  }}>
-                    <div style={{ fontSize: 24, fontWeight: 700 }}>{sizeTotals[size.id]}</div>
-                    <div style={{ fontSize: 12 }}>{size.name}</div>
-                    <div style={{ fontSize: 10, opacity: 0.8 }}>{size.height}</div>
-                  </div>
-                </Col>
-              ))}
-            </Row>
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card title="按类型汇总" size="small">
-            <Row gutter={8}>
-              {UNIFORM_TYPES.map(type => (
-                <Col span={8} key={type.id}>
-                  <div style={{
-                    background: pivot[type.id].total > 0
-                      ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)'
-                      : '#f5f5f5',
-                    color: pivot[type.id].total > 0 ? 'white' : '#999',
-                    padding: '16px 8px',
-                    textAlign: 'center',
-                    borderRadius: 8,
-                    marginBottom: 8
-                  }}>
-                    <div style={{ fontSize: 24, fontWeight: 700 }}>{pivot[type.id].total}</div>
-                    <div style={{ fontSize: 12 }}>{type.name}</div>
-                    <div style={{ fontSize: 10, opacity: 0.8 }}>¥{type.price}/套</div>
-                  </div>
-                </Col>
-              ))}
-            </Row>
-          </Card>
-        </Col>
+        {SEASONS.map(season => {
+          const lockedSummary = getSizeSummaryBySeasonAndStatus(season.id, ['submitted']);
+          const suppSummary = getSizeSummaryBySeasonAndStatus(season.id, ['supplementary']);
+          const seasonBatches = batches.filter(b => b.season === season.id);
+          const lockedBatches = seasonBatches.filter(b => b.locked).length;
+
+          return (
+            <Col span={12} key={season.id}>
+              <Card
+                title={`${season.icon} ${season.name} 整体汇总`}
+                size="small"
+                extra={
+                  <Space>
+                    <Tag color="green">已锁定{lockedBatches}/{seasonBatches.length}</Tag>
+                    <Tag color="blue">¥{getSeasonPrice(season.id)}/套</Tag>
+                  </Space>
+                }
+              >
+                <Row gutter={8}>
+                  {SIZES.map(size => {
+                    const locked = lockedSummary.find(s => s.id === size.id)?.count || 0;
+                    const supp = suppSummary.find(s => s.id === size.id)?.count || 0;
+                    const total = locked + supp;
+                    return (
+                      <Col span={Math.floor(24 / SIZES.length)} key={size.id}>
+                        <div style={{
+                          background: total > 0
+                            ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)'
+                            : '#f5f5f5',
+                          color: total > 0 ? 'white' : '#999',
+                          padding: '10px 4px',
+                          textAlign: 'center',
+                          borderRadius: 6,
+                          marginBottom: 6
+                        }}>
+                          <div style={{ fontSize: 18, fontWeight: 700 }}>{total}</div>
+                          <div style={{ fontSize: 11 }}>{size.name}</div>
+                          {supp > 0 && (
+                            <div style={{ fontSize: 10, opacity: 0.9 }}>含补录{supp}</div>
+                          )}
+                        </div>
+                      </Col>
+                    );
+                  })}
+                </Row>
+              </Card>
+            </Col>
+          );
+        })}
       </Row>
 
       <Modal
-        title={`${getClassName(selectedClass)} - 订单详情`}
+        title={detailBatch ? `${detailBatch.className} - ${detailBatch.seasonName} 批次详情` : '批次详情'}
         open={detailModalVisible}
         onCancel={() => setDetailModalVisible(false)}
         width={800}
@@ -515,34 +684,54 @@ export default function SupplierPage() {
           </Button>
         ]}
       >
-        <Descriptions column={2} size="small" style={{ marginBottom: 16 }}>
-          <Descriptions.Item label="班级">{getClassName(selectedClass)}</Descriptions.Item>
-          <Descriptions.Item label="提交人数">{classSummary.submitted} / {classSummary.total}</Descriptions.Item>
-          <Descriptions.Item label="总金额">¥{classSummary.totalAmount}</Descriptions.Item>
-          <Descriptions.Item label="订单状态">
-            {isClassLocked(selectedClass)
-              ? <Tag color="red">已锁定</Tag>
-              : isClassConfirmed(selectedClass)
-                ? <Tag color="green">已确认</Tag>
-                : <Tag color="orange">待确认</Tag>
-            }
-          </Descriptions.Item>
-        </Descriptions>
+        {detailBatch && (
+          <>
+            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="批次类型">
+                {detailBatch.batchType === 'supplementary'
+                  ? <Tag color="purple" icon={<PlusOutlined />}>补录批次</Tag>
+                  : <Tag color="blue">正常批次</Tag>
+                }
+              </Descriptions.Item>
+              <Descriptions.Item label="班级">{detailBatch.className}</Descriptions.Item>
+              <Descriptions.Item label="季节">{detailBatch.seasonIcon} {detailBatch.seasonName}</Descriptions.Item>
+              <Descriptions.Item label="提交人数">{detailBatch.submitted}人</Descriptions.Item>
+              <Descriptions.Item label="总金额">¥{detailBatch.totalAmount}</Descriptions.Item>
+              <Descriptions.Item label="确认状态">
+                {detailBatch.batchType === 'supplementary'
+                  ? <Tag color="default">自动生效</Tag>
+                  : (detailBatch.confirmed ? <Tag color="success">已确认</Tag> : <Tag color="warning">待确认</Tag>)}
+              </Descriptions.Item>
+              <Descriptions.Item label="锁定状态">
+                {detailBatch.batchType === 'supplementary'
+                  ? <Tag color="purple" icon={<ShopOutlined />}>待生产</Tag>
+                  : (detailBatch.locked ? <Tag color="error">已锁定</Tag> : <Tag color="default">待锁单</Tag>)}
+              </Descriptions.Item>
+              <Descriptions.Item label="确认时间">{detailBatch.batchType === 'supplementary' ? '-' : (detailBatch.confirmedAt || '-')}</Descriptions.Item>
+              <Descriptions.Item label="锁定时间">{detailBatch.batchType === 'supplementary' ? '-' : (detailBatch.lockedAt || '-')}</Descriptions.Item>
+              <Descriptions.Item label="截止时间" span={2}>{detailBatch.deadline || '-'}</Descriptions.Item>
+              <Descriptions.Item label="批次ID" span={2}>
+                <span style={{ color: '#999' }}>{detailBatch.id}</span>
+              </Descriptions.Item>
+            </Descriptions>
 
-        <div className="table-container">
-          <Table
-            columns={detailColumns}
-            dataSource={classStudents}
-            rowKey="id"
-            pagination={false}
-            bordered
-            size="small"
-          />
-        </div>
-
-        <div className="summary-total">
-          合计：{classStudents.length} 人，总金额 ¥{classSummary.totalAmount}
-        </div>
+            <Divider orientation="left">学生明细（{detailStudents.length}人）</Divider>
+            <div className="table-container">
+              {detailStudents.length > 0 ? (
+                <Table
+                  columns={detailColumns}
+                  dataSource={detailStudents}
+                  rowKey="id"
+                  pagination={false}
+                  bordered
+                  size="small"
+                />
+              ) : (
+                <Empty description="暂无学生数据" style={{ padding: '20px 0' }} />
+              )}
+            </div>
+          </>
+        )}
       </Modal>
     </div>
   );
