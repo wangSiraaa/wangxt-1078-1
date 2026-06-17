@@ -299,7 +299,19 @@ export default function TeacherPage() {
 
   const handleAddStudent = () => {
     if (isLocked) {
-      message.error('该季节订单已锁定，不能通过此入口新增学生，请使用「新增补录」按钮');
+      Modal.confirm({
+        title: '订单已锁定 · 补录模式',
+        icon: <LockOutlined style={{ color: '#722ed1' }} />,
+        content: (
+          <div>
+            <p>该季节订单已锁定并提交给供应商，<strong>已提交的学生尺码不可修改</strong>。</p>
+            <p style={{ marginBottom: 0 }}>当前操作将进入<strong style={{ color: '#722ed1' }}>补录模式</strong>，用于补录遗漏学生或新转入学生。补录订单会作为独立批次发给供应商。</p>
+          </div>
+        ),
+        okText: '进入补录',
+        cancelText: '取消',
+        onOk: () => handleAddSupplementary()
+      });
       return;
     }
     if (isConfirmed) {
@@ -797,13 +809,22 @@ export default function TeacherPage() {
               添加学生（正常订购）
             </Button>
           )}
+          {(isLocked || isConfirmed) && (
+            <Button
+              icon={<PlusOutlined />}
+              onClick={handleAddStudent}
+              style={isLocked ? { borderColor: '#722ed1', color: '#722ed1' } : {}}
+            >
+              {isLocked ? '补录学生（锁定后用）' : '补录学生（已确认后用）'}
+            </Button>
+          )}
           <Button
             type="primary"
             icon={<PlusOutlined />}
             onClick={handleAddSupplementary}
             style={{ background: '#722ed1', borderColor: '#722ed1' }}
           >
-            新增补录（锁单后缺码用）
+            新增补录（缺码/遗漏用）
           </Button>
         </Space>
       </div>
@@ -868,18 +889,26 @@ export default function TeacherPage() {
               key="draft"
               icon={<SaveOutlined />}
               onClick={handleSubmitDraft}
-              disabled={isConfirmed || isLocked}
+              disabled={
+                editMode === 'supplementary'
+                  ? false
+                  : isConfirmed || (isLocked && editingStudent && getStudentSeasonOrder(editingStudent).status === 'submitted')
+              }
             >
-              保存为试穿稿
+              {editMode === 'supplementary' ? '保存为补录入稿' : '保存为试穿稿'}
             </Button>,
             <Button
               key="submit"
               type="primary"
               icon={<SendOutlined />}
               onClick={handleSubmitFinal}
-              disabled={isLocked}
+              disabled={
+                editMode === 'supplementary'
+                  ? false
+                  : (isLocked && editingStudent && getStudentSeasonOrder(editingStudent).status === 'submitted')
+              }
             >
-              正式提交
+              {editMode === 'supplementary' ? '提交补录' : '正式提交'}
             </Button>
           ]
         }
